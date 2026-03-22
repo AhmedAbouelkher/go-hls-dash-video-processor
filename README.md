@@ -7,7 +7,7 @@ A zero-dependency CLI tool written in Go that transcodes a source video into ada
 ## Demo
 
 <video controls>
-  <source src="demo.mp4" type="video/mp4">
+  <source src="https://github.com/AhmedAbouelkher/go-hls-dash-video-processor/raw/refs/heads/main/demo.mp4" type="video/mp4">
 </video>
 
 ## Features
