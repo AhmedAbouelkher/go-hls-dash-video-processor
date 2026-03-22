@@ -4,7 +4,7 @@
 
 A zero-dependency CLI tool written in Go that transcodes a source video into adaptive bitrate streaming formats — **HLS** and **DASH**. It uses **FFmpeg** for video/audio transcoding and **GPAC** for segment packaging, producing a ready-to-serve streaming output directory with multiple resolution variants, separated audio, and a thumbnail.
 
-## Demo
+## [Demo](https://github.com/AhmedAbouelkher/go-hls-dash-video-processor/raw/refs/heads/main/demo.mp4)
 
 <video controls>
   <source src="https://github.com/AhmedAbouelkher/go-hls-dash-video-processor/raw/refs/heads/main/demo.mp4" type="video/mp4">
