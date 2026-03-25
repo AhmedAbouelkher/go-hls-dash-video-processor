@@ -25,7 +25,6 @@ func generate(ctx context.Context, in *generateInput) (string, error) {
 		in.r.maxBitrate,
 		in.r.bufsize,
 		in.r.Height,
-		in.r.Width,
 		outF,
 	)
 

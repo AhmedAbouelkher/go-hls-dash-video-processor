@@ -150,11 +150,31 @@ curl -o sample.mp4 "http://commondatastorage.googleapis.com/gtv-videos-bucket/sa
 ./video-processor sample.mp4
 ```
 
+## Testing
+
+Run unit tests:
+
+```bash
+go test ./...
+```
+
+Run tests with verbose output:
+
+```bash
+go test -v ./...
+```
+
+Run tests with coverage:
+
+```bash
+go test -cover ./...
+```
+
 ## Roadmap
 
 - [ ] Add hardware acceleration support
 - [ ] Improve error handling
-- [ ] Add unit tests
+- [x] Add unit tests
 
 ## License
 
