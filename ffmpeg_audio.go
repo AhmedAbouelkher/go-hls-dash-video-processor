@@ -9,12 +9,34 @@ import (
 	"time"
 )
 
+type removeAudioInput struct {
+	r      *resolution
+	input  string
+	target string
+}
+
+func removeAudio(ctx context.Context, in *removeAudioInput) (string, error) {
+	outF := fmt.Sprintf("%s/%s_noaudio.mp4", in.target, in.r.Name())
+	c := fmt.Sprintf(
+		`ffmpeg -v error -y -i %s -c:v copy -an %s`,
+		in.input,
+		outF,
+	)
+	args := strings.Split(c, " ")
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	o, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", NewFFmpegGenError(err, string(o))
+	}
+	return outF, nil
+}
+
 type audioResult struct {
 	af  *ACCAudioOutput
 	err error
 }
 
-func generateAudio(ctx context.Context, ac chan audioResult, videoID, i, tf string) {
+func generateAudio(ctx context.Context, videoID, i, tf string) (*ACCAudioOutput, error) {
 	in := &GenerateAudioInput{
 		Input:  i,
 		Target: tf,
@@ -24,13 +46,11 @@ func generateAudio(ctx context.Context, ac chan audioResult, videoID, i, tf stri
 		"video_id": videoID,
 		"input":    in.Input,
 		"target":   in.Target,
-	}).Info("🔉 generating audio")
+	}).Debug("🔉 generating audio")
 
-	// Generate [audio] using ffmpeg
 	af, err := GenerateACC(ctx, in.Input, in.Target)
 	if err != nil {
-		ac <- audioResult{err: err}
-		return
+		return nil, err
 	}
 	if af == nil {
 		logger.WithFields(Fields{
@@ -39,7 +59,7 @@ func generateAudio(ctx context.Context, ac chan audioResult, videoID, i, tf stri
 			"video_id": videoID,
 		}).Warning("no audio data found")
 	}
-	ac <- audioResult{af, nil}
+	return af, nil
 }
 
 // MARK:- ACC
@@ -145,7 +165,7 @@ func getAudioMetadata(ctx context.Context, i string) (*AudioData, error) {
 
 func parseOutput(o string) map[string]string {
 	m := make(map[string]string)
-	for _, v := range strings.Split(o, "\n") {
+	for v := range strings.SplitSeq(o, "\n") {
 		kv := strings.Split(v, "=")
 		// skip empty lines, and lines without a key and value
 		if len(kv) != 2 {

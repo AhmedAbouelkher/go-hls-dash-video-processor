@@ -4,14 +4,11 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"os/exec"
 	"strings"
 	"time"
 )
 
 const (
-	minWorkers = 2
-
 	Res240p  = "240p"
 	Res360p  = "360p"
 	Res480p  = "480p"
@@ -48,7 +45,6 @@ type videoResult struct {
 
 type videoGenInput struct {
 	videoID  string
-	vc       chan videoResult
 	settings *ResolutionsSettings
 	input    string
 	target   string
@@ -56,15 +52,13 @@ type videoGenInput struct {
 	Duration int64
 }
 
-func generateVideo(ctx context.Context, in *videoGenInput) {
+func generateVideo(ctx context.Context, in *videoGenInput) (GenerationResolutions, *VideoResolution, error) {
 	tCtx, cancel := context.WithTimeout(ctx, 1*time.Minute)
 	defer cancel()
 
-	// Get resolution of the input file
 	res, err := GetResolution(tCtx, in.input)
 	if err != nil {
-		in.vc <- videoResult{err: err}
-		return
+		return nil, nil, err
 	}
 
 	logger.WithFields(Fields{
@@ -72,9 +66,8 @@ func generateVideo(ctx context.Context, in *videoGenInput) {
 		"video_resolution": res.String(),
 		"input":            in.input,
 		"target":           in.target,
-	}).Infof("🔧 source width x height: %dx%d", res.Width, res.Height)
+	}).Debugf("🔧 source width x height: %dx%d", res.Width, res.Height)
 
-	// Generate resolution using ffmpeg
 	resIn := &GenerateResolutionsInput{
 		VideoID:  in.videoID,
 		Res:      res,
@@ -86,10 +79,9 @@ func generateVideo(ctx context.Context, in *videoGenInput) {
 	}
 	resolutions, err := GenerateResolutions(ctx, resIn)
 	if err != nil {
-		in.vc <- videoResult{err: err}
-		return
+		return nil, nil, err
 	}
-	in.vc <- videoResult{resolutions, res, nil}
+	return resolutions, res, nil
 }
 
 // MARK:- Multiple Resolutions Generation
@@ -172,23 +164,23 @@ func GenerateResolutions(ctx context.Context, in *GenerateResolutionsInput) (Gen
 		"size":             in.Size,
 		"duration":         formatTimeSeconds(int(in.Duration)),
 		"resolutions":      strings.Join(resToGenerate, ", "),
-	}).Infof("⚙️ generating %d resolutions", len(resolutions))
+	}).Debugf("⚙️ generating %d resolutions", len(resolutions))
 
 	if len(resolutions) == 0 {
 		return nil, fmt.Errorf("failed to find suitable processing resolutions with %s", in.Res.String())
 	}
 
-	p := &Pool[resolution, *GenerateResOutput]{
-		Workers: min(len(resolutions), workersNum(in.Duration)),
-		Data:    resolutions,
-		Consumer: func(r resolution) (*GenerateResOutput, error) {
-			to := r.CalcTimeout(&TimeoutCalc{size: in.Size, duration: in.Duration})
+	res := GenerationResolutions{}
 
-			ctx, cancel := context.WithTimeout(ctx, to)
+	for _, r := range resolutions {
+		func() {
+			timeout := r.CalcTimeout(&TimeoutCalc{size: in.Size, duration: in.Duration})
+
+			rCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
 			now := time.Now()
-			out, err := generateRes(ctx, &generateResInput{
+			out, err := generateRes(rCtx, &generateResInput{
 				r:      &r,
 				input:  in.Input,
 				target: in.Target,
@@ -198,42 +190,21 @@ func GenerateResolutions(ctx context.Context, in *GenerateResolutionsInput) (Gen
 				logger.WithError(err).WithFields(Fields{
 					"video_id":      in.VideoID,
 					"res":           in.Res.String(),
-					"timeout_sec":   to / time.Second,
+					"timeout_sec":   timeout / time.Second,
 					"time_took_sec": time.Since(now).Seconds(),
 					"input":         in.Input,
 					"target":        in.Target,
 					"resolution":    in.Res,
 					"failed":        r.String(),
 				}).Error("🥲 failed to generate resolution")
-				return nil, err
+				return
 			}
 
-			return out, nil
-		},
-	}
-	res := GenerationResolutions{}
-
-	r := runWorkersPool(p)
-	for _, rs := range r {
-		if rs.err != nil {
-			continue
-		}
-		res = append(res, rs.res)
+			res = append(res, out)
+		}()
 	}
 
 	return res, nil
-}
-
-// workersNum calculates the number of workers based on video duration.
-// Algorithm: For videos >= 2 hours, use (hours + minWorkers) workers.
-// For shorter videos, use minWorkers. This scales processing power with video length.
-func workersNum(duration int64) int {
-	aw := 0
-	hr := secondsToHours(duration)
-	if hr >= 2 {
-		aw = int(hr) + minWorkers
-	}
-	return max(minWorkers, aw)
 }
 
 // MARK:- Single Resolution Generation
@@ -304,58 +275,6 @@ func generateRes(ctx context.Context, in *generateResInput) (*GenerateResOutput,
 		GenerationDuration:   genT,
 		AudioRemovalDuration: removeAudioT,
 	}, nil
-}
-
-type generateInput struct {
-	r      *resolution
-	input  string
-	target string
-}
-
-// FROM: https://trac.ffmpeg.org/wiki/Encode/H.264
-func generate(ctx context.Context, in *generateInput) (string, error) {
-	outF := fmt.Sprintf("%s/play_%s.mp4", in.target, in.r.Name())
-
-	c := fmt.Sprintf(
-		`ffmpeg -v error -y -i %s -c:v libx264 -preset medium -crf %d -b:v %dk -maxrate %dk -bufsize %dk -c:a copy -vf scale=-2:%d -f mp4 %s`,
-		in.input,
-		in.r.crf,
-		in.r.bitrate,
-		in.r.maxBitrate,
-		in.r.bufsize,
-		in.r.Height,
-		outF,
-	)
-
-	args := strings.Split(c, " ")
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	o, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", NewFFmpegGenError(err, string(o))
-	}
-	return outF, nil
-}
-
-type removeAudioInput struct {
-	r      *resolution
-	input  string
-	target string
-}
-
-func removeAudio(ctx context.Context, in *removeAudioInput) (string, error) {
-	outF := fmt.Sprintf("%s/%s_noaudio.mp4", in.target, in.r.Name())
-	c := fmt.Sprintf(
-		`ffmpeg -v error -y -i %s -c:v copy -an %s`,
-		in.input,
-		outF,
-	)
-	args := strings.Split(c, " ")
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	o, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", NewFFmpegGenError(err, string(o))
-	}
-	return outF, nil
 }
 
 // MARK:- Video Resolutions

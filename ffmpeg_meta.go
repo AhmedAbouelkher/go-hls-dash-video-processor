@@ -6,6 +6,7 @@ import (
 	"math"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -315,4 +316,34 @@ func formatTimeSeconds(sec int) string {
 	m := (sec - h*3600) / 60
 	s := sec - h*3600 - m*60
 	return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
+}
+
+func GetAvailableVideoEncoders(ctx context.Context) ([]string, error) {
+	// -hide_banner keeps output cleaner and stable for parsing
+	out, err := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-encoders").CombinedOutput()
+	if err != nil {
+		return nil, NewFFmpegGenError(err, string(out))
+	}
+	encoders := make([]string, 0, 64)
+	seen := make(map[string]struct{})
+	for line := range strings.SplitSeq(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Encoder rows begin with a 6-char flag block, e.g. "V....."
+		// We only keep video encoders (first flag == 'V').
+		fields := strings.Fields(line)
+		if len(fields) < 2 || len(fields[0]) != 6 || fields[0][0] != 'V' {
+			continue
+		}
+		name := fields[1]
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		encoders = append(encoders, name)
+	}
+	slices.Sort(encoders)
+	return encoders, nil
 }

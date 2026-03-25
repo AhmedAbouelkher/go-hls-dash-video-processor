@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"sync"
 )
 
 type VideoGenerateInput struct {
@@ -45,7 +44,6 @@ func buildGenErrLogDetails(err error) Fields {
 func GenerateAndPackageVideo(in *VideoGenerateInput) (*VideoGenerateOutput, error) {
 	inputFileName := in.Input.Name()
 
-	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(in.Ctx)
 	defer cancel()
 
@@ -57,7 +55,7 @@ func GenerateAndPackageVideo(in *VideoGenerateInput) (*VideoGenerateOutput, erro
 		}).Error("💩 Video file is corrupted")
 		return nil, err
 	} else {
-		logger.WithFields(in.LogDetails()).Info("✅ video file is valid")
+		logger.WithFields(in.LogDetails()).Debug("✅ video file is valid")
 	}
 
 	srcSize, err := GetVideoSize(ctx, inputFileName)
@@ -70,36 +68,8 @@ func GenerateAndPackageVideo(in *VideoGenerateInput) (*VideoGenerateOutput, erro
 		logger.WithError(err).WithFields(in.LogDetails()).Error("failed to get video duration")
 	}
 
-	wg.Add(2)
-	ac := make(chan audioResult, 1)
-	go func() {
-		defer wg.Done()
-		defer close(ac)
-
-		generateAudio(ctx, ac, in.VideoID, inputFileName, in.Output)
-	}()
-
-	vc := make(chan videoResult, 1)
-	go func() {
-		defer wg.Done()
-		defer close(vc)
-
-		i := &videoGenInput{
-			videoID:  in.VideoID,
-			vc:       vc,
-			settings: in.Settings,
-			input:    inputFileName,
-			target:   in.Output,
-			size:     srcSize,
-			Duration: duration,
-		}
-		generateVideo(ctx, i)
-	}()
-
-	wg.Wait()
-
-	a := <-ac
-	if err := a.err; err != nil {
+	audioOutput, err := generateAudio(ctx, in.VideoID, inputFileName, in.Output)
+	if err != nil {
 		logger.WithError(err).
 			WithFields(in.LogDetails()).
 			WithFields(buildGenErrLogDetails(err)).
@@ -107,16 +77,24 @@ func GenerateAndPackageVideo(in *VideoGenerateInput) (*VideoGenerateOutput, erro
 		return nil, err
 	}
 
-	v := <-vc
-	if err := v.err; err != nil {
+	i := &videoGenInput{
+		videoID:  in.VideoID,
+		settings: in.Settings,
+		input:    inputFileName,
+		target:   in.Output,
+		size:     srcSize,
+		Duration: duration,
+	}
+	resolutions, vRes, err := generateVideo(ctx, i)
+	if err != nil {
 		logger.WithError(err).WithFields(in.LogDetails()).Error("failed to generate video")
 		return nil, err
 	}
 
 	cin := &videoComposeInput{
 		videoID: in.VideoID,
-		vr:      &v,
-		ar:      &a,
+		vr:      &videoResult{resolutions: resolutions, vRes: vRes},
+		ar:      &audioResult{af: audioOutput},
 		typ:     in.Type,
 		target:  in.Output,
 	}
@@ -141,7 +119,7 @@ func GenerateAndPackageVideo(in *VideoGenerateInput) (*VideoGenerateOutput, erro
 		thumbnail = "" // reset thumbnail
 	}
 
-	if err := cleanFiles(v.resolutions, in.Settings); err != nil {
+	if err := cleanFiles(resolutions, in.Settings); err != nil {
 		logger.WithError(err).WithFields(in.LogDetails()).Error("failed to clean up files")
 	}
 
@@ -157,13 +135,13 @@ func GenerateAndPackageVideo(in *VideoGenerateInput) (*VideoGenerateOutput, erro
 		Target: in.Output,
 		VideoMetadata: &VideoMetadata{
 			Size:       ts,
-			Resolution: v.vRes,
+			Resolution: vRes,
 			SourceSize: srcSize,
 			Duration:   duration,
 		},
 		Thumbnail:       filepath.Base(thumbnail),
-		VideoGeneration: v.resolutions,
-		AudioOutput:     a.af,
+		VideoGeneration: resolutions,
+		AudioOutput:     audioOutput,
 		VideoPackaging:  pout,
 	}, nil
 }

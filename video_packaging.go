@@ -49,7 +49,7 @@ func packageVideo(ctx context.Context, in *videoComposeInput) (*PackagingOutput,
 		"resolution":        in.vr.vRes.String(),
 		"audio":             ap,
 		"type":              in.typ,
-	}).Info("📦 packaging video")
+	}).Debug("📦 packaging video")
 
 	vr := in.vr
 	ar := in.ar
